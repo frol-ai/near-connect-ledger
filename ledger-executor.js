@@ -35,6 +35,14 @@ const LEDGER_BLE_REQUEST = "near-connect:ledger-ble:request";
 const LEDGER_BLE_RESPONSE = "near-connect:ledger-ble:response";
 const MAX_BLOCK_HEIGHT_INCREMENT = 900n; // About 15 minutes
 
+// How long we wait for the device to answer an APDU. Signing APDUs only answer
+// once the user has reviewed and approved (or rejected) on the Ledger, so this
+// is the user's review time — keep it generous enough to read a long
+// transaction thoroughly.
+const DEVICE_REVIEW_TIMEOUT_MS = 7 * 60 * 1000;
+// Connection housekeeping (scan, connect, probe) that never waits on the user.
+const NATIVE_BLE_OPERATION_TIMEOUT_MS = 60 * 1000;
+
 // Pending callback map for async native bridge responses
 const _pendingCallbacks = new Map();
 let _callbackId = 0;
@@ -54,7 +62,7 @@ window.addEventListener("message", (event) => {
     }
 });
 
-function nativeBLE(action, params = {}) {
+function nativeBLE(action, params = {}, timeoutMs = NATIVE_BLE_OPERATION_TIMEOUT_MS) {
     return new Promise((resolve, reject) => {
         const id = String(++_callbackId);
         _pendingCallbacks.set(id, { resolve, reject });
@@ -73,13 +81,12 @@ function nativeBLE(action, params = {}) {
             reject(new Error("Native BLE bridge unavailable: " + e.message));
         }
 
-        // Timeout after 60 seconds
         setTimeout(() => {
             if (_pendingCallbacks.has(id)) {
                 _pendingCallbacks.delete(id);
                 reject(new Error("Ledger BLE operation timed out"));
             }
-        }, 60000);
+        }, timeoutMs);
     });
 }
 
@@ -269,7 +276,7 @@ async function hidExchange(apdu) {
             const timeout = setTimeout(() => {
                 _hidDevice.removeEventListener("inputreport", handler);
                 reject(new Error("HID response timed out"));
-            }, 60000);
+            }, DEVICE_REVIEW_TIMEOUT_MS);
             function handler(event) {
                 clearTimeout(timeout);
                 _hidDevice.removeEventListener("inputreport", handler);
@@ -315,6 +322,11 @@ const LEDGER_BLE_SERVICES = [
 ];
 
 let _bleDevice = null;
+// The device the user picked in the Bluetooth chooser. Kept even when GATT
+// drops (Ledger sleeps, goes out of range) so we can reconnect with
+// gatt.connect() — no chooser, no user gesture — instead of asking the user
+// to pick it again. Only signOut forgets it.
+let _bleKnownDevice = null;
 let _bleWriteChar = null;
 let _bleNotifyChar = null;
 let _bleMtuSize = 20;
@@ -407,7 +419,7 @@ async function bleExchange(apdu) {
     while (true) {
         const packet = await Promise.race([
             _bleWaitNotification(),
-            new Promise((_, reject) => setTimeout(() => reject(new Error("BLE response timed out")), 30000)),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("BLE response timed out")), DEVICE_REVIEW_TIMEOUT_MS)),
         ]);
 
         const tag = packet[0];
@@ -437,6 +449,107 @@ async function bleExchange(apdu) {
     return responseData;
 }
 
+async function bleOpen(device, needsReconnect) {
+    console.log("[BLE] connecting GATT (needsReconnect:", needsReconnect, ")...");
+
+    // Force-disconnect stale connections before connecting
+    if (device.gatt.connected) {
+        console.log("[BLE] disconnecting stale GATT session...");
+        device.gatt.disconnect();
+        await new Promise(r => setTimeout(r, 600));
+    }
+
+    await device.gatt.connect();
+    console.log("[BLE] GATT connected, discovering services...");
+
+    // Get primary services (match @ledgerhq: get all, take first)
+    let service = null;
+    try {
+        const services = await device.gatt.getPrimaryServices();
+        service = services[0] || null;
+    } catch {
+        for (const uuid of LEDGER_BLE_SERVICES) {
+            try { service = await device.gatt.getPrimaryService(uuid); break; } catch { }
+        }
+    }
+    if (!service) throw new Error("Ledger BLE service not found on device.");
+    console.log("[BLE] service found:", service.uuid);
+
+    // Find write and notify characteristics
+    const chars = await service.getCharacteristics();
+    _bleWriteChar = null;
+    _bleNotifyChar = null;
+    for (const char of chars) {
+        const uuid = char.uuid.toLowerCase();
+        if (uuid.endsWith("-0002-4c6564676572")) _bleWriteChar = char;
+        if (uuid.endsWith("-0001-4c6564676572")) _bleNotifyChar = char;
+    }
+    if (!_bleWriteChar || !_bleNotifyChar) throw new Error("Ledger BLE characteristics not found.");
+
+    const wp = _bleWriteChar.properties;
+    console.log("[BLE] write char:", _bleWriteChar.uuid,
+        "write:", wp.write, "writeWithoutResponse:", wp.writeWithoutResponse);
+
+    // Start notifications — drain any stale data
+    _bleNotifyQueue = [];
+    _bleNotifyResolve = null;
+    _bleNotifyChar.addEventListener("characteristicvaluechanged", _bleOnNotification);
+    await _bleNotifyChar.startNotifications();
+    console.log("[BLE] notifications started");
+
+    // Small delay to let any stale notifications arrive, then drain them
+    await new Promise(r => setTimeout(r, 100));
+    _bleNotifyQueue = [];
+    _bleNotifyResolve = null;
+
+    _bleDevice = device;
+    _activeTransport = device;
+    _activeTransportMode = TRANSPORT_WEB_BLE;
+
+    // Negotiate MTU (match @ledgerhq: on failure, disconnect and throw)
+    const beforeMTU = Date.now();
+    try {
+        await _bleNegotiateMTU();
+    } catch (e) {
+        console.log("[BLE] MTU failed, disconnecting");
+        device.gatt.disconnect();
+        throw e;
+    }
+    const afterMTU = Date.now();
+
+    // Firmware workaround (match @ledgerhq):
+    // On first open, if MTU was slow (>1s, indicating new pairing),
+    // disconnect, wait, and reconnect fresh
+    if (needsReconnect && (afterMTU - beforeMTU) > 1000) {
+        console.log("[BLE] new pairing detected, reconnecting after delay...");
+        _bleNotifyChar.removeEventListener("characteristicvaluechanged", _bleOnNotification);
+        try { await _bleNotifyChar.stopNotifications(); } catch { }
+        device.gatt.disconnect();
+        await new Promise(r => setTimeout(r, 4000));
+        return await bleOpen(device, false);
+    }
+}
+
+function _bleOnDisconnected() {
+    console.log("[BLE] device disconnected");
+    // Drop the session, keep _bleKnownDevice for a silent reconnect.
+    _bleDevice = null;
+    _bleWriteChar = null;
+    _bleNotifyChar = null;
+    _bleNotifyQueue = [];
+    _bleNotifyResolve = null;
+    if (_activeTransportMode === TRANSPORT_WEB_BLE) {
+        _activeTransport = null;
+        _activeTransportMode = null;
+    }
+}
+
+/** Open (or re-open) GATT to the remembered device; throws if that isn't possible. */
+async function bleReconnectKnownDevice() {
+    if (!_bleKnownDevice) throw new Error("No remembered Ledger Bluetooth device");
+    await bleOpen(_bleKnownDevice, false);
+}
+
 // ============================================================================
 // Transport Abstraction
 // ============================================================================
@@ -462,7 +575,7 @@ async function transportExchange(apdu) {
         return await bleExchange(apdu);
     }
     if (_activeTransportMode === TRANSPORT_NATIVE_BLE) {
-        const response = await nativeBLE("exchange", { command: Array.from(apdu) });
+        const response = await nativeBLE("exchange", { command: Array.from(apdu) }, DEVICE_REVIEW_TIMEOUT_MS);
         return new Uint8Array(response);
     }
     throw new Error("No active transport");
@@ -516,11 +629,19 @@ async function transportConnect(mode) {
         }
         throw new Error("Neither WebUSB nor WebHID is available in this browser.");
     } else if (mode === TRANSPORT_WEB_BLE) {
-        const serviceUuids = LEDGER_BLE_SERVICES;
+        // Reconnect to the device picked earlier without showing the chooser.
+        if (_bleKnownDevice) {
+            try {
+                await bleReconnectKnownDevice();
+                return;
+            } catch (e) {
+                console.log("[BLE] silent reconnect failed, asking for the device:", e.message);
+            }
+        }
         let device;
         try {
             device = await navigator.bluetooth.requestDevice({
-                filters: serviceUuids.map(uuid => ({ services: [uuid] })),
+                filters: LEDGER_BLE_SERVICES.map(uuid => ({ services: [uuid] })),
             });
         } catch (e) {
             if (e.name === "SecurityError") throw new Error("Web Bluetooth access is blocked. Please check browser permissions.");
@@ -528,100 +649,12 @@ async function transportConnect(mode) {
         }
         if (!device) throw new Error("No Ledger device selected.");
 
-        async function bleOpen(device, needsReconnect) {
-            console.log("[BLE] connecting GATT (needsReconnect:", needsReconnect, ")...");
-
-            // Force-disconnect stale connections before connecting
-            if (device.gatt.connected) {
-                console.log("[BLE] disconnecting stale GATT session...");
-                device.gatt.disconnect();
-                await new Promise(r => setTimeout(r, 600));
-            }
-
-            await device.gatt.connect();
-            console.log("[BLE] GATT connected, discovering services...");
-
-            // Get primary services (match @ledgerhq: get all, take first)
-            let service = null;
-            try {
-                const services = await device.gatt.getPrimaryServices();
-                service = services[0] || null;
-            } catch {
-                for (const uuid of serviceUuids) {
-                    try { service = await device.gatt.getPrimaryService(uuid); break; } catch { }
-                }
-            }
-            if (!service) throw new Error("Ledger BLE service not found on device.");
-            console.log("[BLE] service found:", service.uuid);
-
-            // Find write and notify characteristics
-            const chars = await service.getCharacteristics();
-            _bleWriteChar = null;
-            _bleNotifyChar = null;
-            for (const char of chars) {
-                const uuid = char.uuid.toLowerCase();
-                if (uuid.endsWith("-0002-4c6564676572")) _bleWriteChar = char;
-                if (uuid.endsWith("-0001-4c6564676572")) _bleNotifyChar = char;
-            }
-            if (!_bleWriteChar || !_bleNotifyChar) throw new Error("Ledger BLE characteristics not found.");
-
-            const wp = _bleWriteChar.properties;
-            console.log("[BLE] write char:", _bleWriteChar.uuid,
-                "write:", wp.write, "writeWithoutResponse:", wp.writeWithoutResponse);
-
-            // Start notifications — drain any stale data
-            _bleNotifyQueue = [];
-            _bleNotifyResolve = null;
-            _bleNotifyChar.addEventListener("characteristicvaluechanged", _bleOnNotification);
-            await _bleNotifyChar.startNotifications();
-            console.log("[BLE] notifications started");
-
-            // Small delay to let any stale notifications arrive, then drain them
-            await new Promise(r => setTimeout(r, 100));
-            _bleNotifyQueue = [];
-            _bleNotifyResolve = null;
-
-            _bleDevice = device;
-            _activeTransport = device;
-            _activeTransportMode = TRANSPORT_WEB_BLE;
-
-            // Negotiate MTU (match @ledgerhq: on failure, disconnect and throw)
-            const beforeMTU = Date.now();
-            try {
-                await _bleNegotiateMTU();
-            } catch (e) {
-                console.log("[BLE] MTU failed, disconnecting");
-                device.gatt.disconnect();
-                throw e;
-            }
-            const afterMTU = Date.now();
-
-            // Firmware workaround (match @ledgerhq):
-            // On first open, if MTU was slow (>1s, indicating new pairing),
-            // disconnect, wait, and reconnect fresh
-            if (needsReconnect && (afterMTU - beforeMTU) > 1000) {
-                console.log("[BLE] new pairing detected, reconnecting after delay...");
-                _bleNotifyChar.removeEventListener("characteristicvaluechanged", _bleOnNotification);
-                try { await _bleNotifyChar.stopNotifications(); } catch { }
-                device.gatt.disconnect();
-                await new Promise(r => setTimeout(r, 4000));
-                return await bleOpen(device, false);
-            }
-        }
-
         await bleOpen(device, true);
-
-        // Disconnect handler: clean up on unexpected BLE disconnect
-        device.addEventListener("gattserverdisconnected", () => {
-            console.log("[BLE] device disconnected");
-            _bleDevice = null;
-            _bleWriteChar = null;
-            _bleNotifyChar = null;
-            _bleNotifyQueue = [];
-            _bleNotifyResolve = null;
-            _activeTransport = null;
-            _activeTransportMode = null;
-        });
+        if (_bleKnownDevice !== device) {
+            _bleKnownDevice?.removeEventListener("gattserverdisconnected", _bleOnDisconnected);
+            device.addEventListener("gattserverdisconnected", _bleOnDisconnected);
+            _bleKnownDevice = device;
+        }
     } else if (mode === TRANSPORT_NATIVE_BLE) {
         // Check if native side already has a connected device (e.g. from a previous iframe session)
         let alreadyConnected = false;
@@ -648,7 +681,8 @@ async function transportConnect(mode) {
     }
 }
 
-async function transportDisconnect() {
+/** Close the session. `forget` also drops the remembered Bluetooth device (signOut). */
+async function transportDisconnect({ forget = false } = {}) {
     try {
         if (_activeTransportMode === TRANSPORT_WEB_USB && _usbDevice) {
             if (_usbDevice.opened) await _usbDevice.close();
@@ -675,6 +709,11 @@ async function transportDisconnect() {
     } catch { }
     _activeTransport = null;
     _activeTransportMode = null;
+    if (forget && _bleKnownDevice) {
+        _bleKnownDevice.removeEventListener("gattserverdisconnected", _bleOnDisconnected);
+        if (_bleKnownDevice.gatt?.connected) _bleKnownDevice.gatt.disconnect();
+        _bleKnownDevice = null;
+    }
 }
 
 async function transportIsConnected() {
@@ -2543,6 +2582,20 @@ class LedgerWallet {
             }
         }
 
+        // Web Bluetooth: the device picked earlier can reconnect without the chooser.
+        if (storedMode === TRANSPORT_WEB_BLE && _bleKnownDevice) {
+            try {
+                await showStatusScreen("Reconnect Ledger", "Reconnecting to your Ledger over Bluetooth…");
+                await bleReconnectKnownDevice();
+                await openingNearApp();
+                await openNearApplication();
+                await showStatusScreen("Preparing Request", "Getting your request ready for signing…");
+                return;
+            } catch {
+                // Out of range / asleep / unpaired — fall through to the Connect button.
+            }
+        }
+
         // Web BLE and HID require requestDevice() which needs a user gesture.
         // Show a "Connect" button so the click provides the gesture context.
         await window.selector.ui.showIframe();
@@ -2779,7 +2832,7 @@ class LedgerWallet {
     }
 
     async signOut() {
-        await transportDisconnect();
+        await transportDisconnect({ forget: true });
         await window.selector.storage.remove(STORAGE_KEY_ACCOUNTS);
         await window.selector.storage.remove(STORAGE_KEY_DERIVATION_PATH);
         await window.selector.storage.remove(STORAGE_KEY_TRANSPORT_MODE);

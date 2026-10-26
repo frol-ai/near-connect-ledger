@@ -60,6 +60,7 @@ To register this executor with near-connect, add the following entry to your wal
   "version": "1.0.0",
   "executor": "/path/to/ledger-executor.js",
   "type": "sandbox",
+  "keepAlive": true,
   "platform": {},
   "features": {
     "signMessage": true,
@@ -80,6 +81,24 @@ To register this executor with near-connect, add the following entry to your wal
   }
 }
 ```
+
+### `keepAlive`
+
+near-connect normally creates a fresh sandbox iframe for every wallet call and
+destroys it afterwards, which drops the device connection each time. Over
+Web Bluetooth that means the device chooser on every request (an opaque-origin
+sandbox can't use `navigator.bluetooth.getDevices()`). With `"keepAlive": true`
+(supported by near-connect builds that include it) the iframe stays alive,
+hidden, between calls, so the connection — and the remembered Bluetooth
+device — persist until sign-out. If the link drops (the Ledger sleeps or goes
+out of range), the executor reconnects to the remembered device with
+`gatt.connect()`, without the chooser.
+
+### Review timeout
+
+APDU responses are awaited for up to 7 minutes (`DEVICE_REVIEW_TIMEOUT_MS`):
+signing responses only arrive after the user has reviewed and approved on the
+device, so this is the user's review time.
 
 ### Required permissions
 
