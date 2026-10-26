@@ -966,6 +966,9 @@ async function rpcRequest(network, method, params) {
     if (json.error) {
         const err = new Error(json.error.message || "RPC request failed");
         err.cause = json.error.cause;
+        // The useful detail ("access key … does not exist while viewing") is in
+        // `data`; `message` is usually just "Server error".
+        err.data = typeof json.error.data === "string" ? json.error.data : JSON.stringify(json.error.data ?? "");
         throw err;
     }
     if (json.result?.error) {
@@ -2116,44 +2119,62 @@ async function promptForAccountId(foundAccounts = [], implicitAccountId = "", on
 // Access Key Verification
 // ============================================================================
 
-async function verifyAccessKey(network, accountId, publicKey) {
-    // Check account exists
+function rpcErrorText(error) {
+    return `${error?.cause?.name ?? ""} ${error?.data ?? ""} ${error?.message ?? ""}`;
+}
+
+function isUnknownAccountError(error) {
+    return /UNKNOWN_ACCOUNT|UnknownAccount|AccountDoesNotExist|account .* does not exist/i.test(rpcErrorText(error));
+}
+
+function isUnknownAccessKeyError(error) {
+    return /UNKNOWN_ACCESS_KEY|access key .* does not exist/i.test(rpcErrorText(error));
+}
+
+async function accountExists(network, accountId) {
     try {
-        await rpcRequest(network, "query", {
-            request_type: "view_account",
-            finality: "final",
-            account_id: accountId,
-        });
+        await rpcRequest(network, "query", { request_type: "view_account", finality: "final", account_id: accountId });
+        return true;
     } catch (error) {
-        const msg = error.message || "";
-        const causeName = error.cause?.name || "";
-        if (causeName === "UNKNOWN_ACCOUNT" || error.data?.includes("does not exist") || msg.includes("does not exist") || error.data?.includes("UnknownAccount") || msg.includes("UnknownAccount") || error.data?.includes("AccountDoesNotExist") || msg.includes("AccountDoesNotExist")) {
-            const err = new Error(`Account ${accountId} does not exist yet.`);
-            err.code = "ACCOUNT_CREATION_REQUIRED";
-            throw err;
-        }
+        if (isUnknownAccountError(error)) return false;
         throw error;
     }
+}
 
-    // Check access key
+function accountCreationRequired(accountId) {
+    const err = new Error(`Account ${accountId} does not exist yet.`);
+    err.code = "ACCOUNT_CREATION_REQUIRED";
+    return err;
+}
+
+/**
+ * Check that `publicKey` is a full-access key of `accountId`.
+ *
+ * One view_access_key call in the common case. Only when the key isn't found
+ * do we ask view_account why: nodes before neard 2.14 answer "access key does
+ * not exist" for an account that doesn't exist at all, and that case (e.g. a
+ * not-yet-funded implicit account) gets the "create account" offer instead of
+ * a dead end.
+ */
+async function verifyAccessKey(network, accountId, publicKey) {
+    let accessKey;
     try {
-        const accessKey = await rpcRequest(network, "query", {
+        accessKey = await rpcRequest(network, "query", {
             request_type: "view_access_key",
             finality: "final",
             account_id: accountId,
             public_key: publicKey,
         });
-        if (accessKey.permission !== "FullAccess") {
-            throw new Error("The public key does not have FullAccess permission for this account.");
-        }
-        return true;
     } catch (error) {
-        const msg = error.message || "";
-        if (msg.includes("access key") || msg.includes("does not exist")) {
-            throw new Error(`Access key not found for account ${accountId}. Please make sure the Ledger public key is registered for this account.`);
-        }
-        throw error;
+        if (isUnknownAccountError(error)) throw accountCreationRequired(accountId);
+        if (!isUnknownAccessKeyError(error)) throw error;
+        if (!(await accountExists(network, accountId))) throw accountCreationRequired(accountId);
+        throw new Error(`Access key not found for account ${accountId}. Please make sure the Ledger public key is registered for this account.`);
     }
+    if (accessKey.permission !== "FullAccess") {
+        throw new Error("The public key does not have FullAccess permission for this account.");
+    }
+    return true;
 }
 
 // ============================================================================
