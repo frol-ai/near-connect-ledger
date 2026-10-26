@@ -1079,11 +1079,23 @@ const LEDGER_STYLES = `
   margin:-8px -10px -8px 0; padding:0; border:none; border-radius:10px; background:transparent; cursor:pointer;
   transition:background-color 120ms ease; -webkit-tap-highlight-color:transparent;
 }
-.lc-link-btn {
-  width:100%; min-height:44px; padding:10px; border-radius:12px; border:1px dashed var(--lc-border-strong); background:transparent;
-  font-family:var(--lc-font); font-size:14px; font-weight:500; color:var(--lc-muted); cursor:pointer;
-  transition:background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+/* Advanced fallback (manual account ID): a quiet disclosure under a divider,
+   so it never competes with the account list as the main call to action. */
+.lc-advanced { display:flex; flex-direction:column; gap:8px; padding-top:12px; border-top:1px solid var(--lc-border); }
+.lc-advanced-toggle {
+  width:100%; display:flex; align-items:center; gap:12px; margin:0 -8px; padding:10px 8px; box-sizing:content-box;
+  border:0; border-radius:10px; background:transparent; color:var(--lc-muted); text-align:left; cursor:pointer;
+  font-family:var(--lc-font); transition:background-color 120ms ease; -webkit-tap-highlight-color:transparent;
 }
+.lc-advanced-title { display:block; font-size:12px; line-height:1.4; color:var(--lc-subtle); }
+.lc-advanced-sub { display:block; font-size:14px; font-weight:500; line-height:1.4; color:var(--lc-muted); }
+.lc-advanced-toggle .lc-chevron { transition:transform 160ms ease, color 120ms ease; }
+.lc-advanced-toggle[aria-expanded="true"] .lc-chevron { transform:rotate(90deg); }
+.lc-advanced-panel {
+  display:flex; flex-direction:column; gap:10px; padding:14px; border-radius:14px;
+  background:var(--lc-surface); border:1px solid var(--lc-border);
+}
+.lc-field-label { font-size:12px; font-weight:600; letter-spacing:0.02em; color:var(--lc-muted); }
 .lc-input {
   width:100%; padding:12px 14px; border-radius:12px; border:1px solid var(--lc-border-strong); background:var(--lc-surface); color:var(--lc-text);
   font-family:var(--lc-font); font-size:15px; box-sizing:border-box; outline:none;
@@ -1115,7 +1127,8 @@ const LEDGER_STYLES = `
   .lc-card:not(:disabled):not(.is-unavailable):hover .lc-chevron { color:var(--lc-text); transform:translateX(2px); }
   .lc-card:not(.is-selected):not(:disabled):hover .lc-radio { border-color:#71717a; }
   .lc-icon-btn:hover { background:rgba(255,255,255,0.08); color:var(--lc-text); }
-  .lc-link-btn:not(:disabled):hover { border-color:#737373; color:#d4d4d4; background:rgba(255,255,255,0.03); }
+  .lc-advanced-toggle:not(:disabled):hover { background:rgba(255,255,255,0.04); }
+  .lc-advanced-toggle:not(:disabled):hover .lc-advanced-sub, .lc-advanced-toggle:not(:disabled):hover .lc-chevron { color:var(--lc-text); }
 }
 /* Press: immediate feedback on mouse and touch alike. */
 .lc-btn:not(:disabled):active, .lc-card:not(:disabled):not(.is-unavailable):active { transform:scale(0.98); }
@@ -1123,15 +1136,15 @@ const LEDGER_STYLES = `
 .lc-btn-secondary:not(:disabled):active { background:rgba(255,255,255,0.1); }
 .lc-card:not(:disabled):not(.is-unavailable):active { background:var(--lc-surface-press); }
 .lc-icon-btn:active { background:rgba(255,255,255,0.14); }
-.lc-link-btn:not(:disabled):active { background:rgba(255,255,255,0.06); }
+.lc-advanced-toggle:not(:disabled):active { background:rgba(255,255,255,0.07); }
 /* Keyboard focus. */
-.lc-btn:focus-visible, .lc-card:focus-visible, .lc-icon-btn:focus-visible, .lc-link-btn:focus-visible {
+.lc-btn:focus-visible, .lc-card:focus-visible, .lc-icon-btn:focus-visible, .lc-advanced-toggle:focus-visible {
   outline:2px solid #60a5fa; outline-offset:2px;
 }
 /* Disabled vs. busy: a busy control stays fully visible and shows a spinner;
    its disabled siblings fade so the user sees which one is working. */
-.lc-btn:disabled, .lc-card:disabled, .lc-link-btn:disabled { cursor:default; }
-.lc-btn:disabled:not(.is-loading), .lc-card:disabled:not(.is-loading):not(.is-unavailable), .lc-link-btn:disabled { opacity:0.45; }
+.lc-btn:disabled, .lc-card:disabled, .lc-advanced-toggle:disabled { cursor:default; }
+.lc-btn:disabled:not(.is-loading), .lc-card:disabled:not(.is-loading):not(.is-unavailable), .lc-advanced-toggle:disabled { opacity:0.45; }
 .lc-btn.is-loading, .lc-card.is-loading { cursor:progress; }
 .lc-card.is-loading { border-color:var(--lc-border-strong); background:var(--lc-surface-hover); }
 
@@ -1166,7 +1179,8 @@ const LEDGER_STYLES = `
 @keyframes lc-blink { 0%, 100% { opacity:1; } 50% { opacity:0.3; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .lc-btn, .lc-card, .lc-icon-btn, .lc-link-btn, .lc-input, .lc-chevron, .lc-radio { transition:none; }
+  .lc-btn, .lc-card, .lc-icon-btn, .lc-advanced-toggle, .lc-input, .lc-chevron, .lc-radio { transition:none; }
+  .lc-advanced-toggle .lc-chevron { transition:none; }
   .lc-screen { animation:none; }
   .lc-card:hover .lc-chevron { transform:none; }
   .lc-btn:not(:disabled):active, .lc-card:not(:disabled):not(.is-unavailable):active { transform:none; }
@@ -1782,8 +1796,13 @@ async function promptForAccountId(foundAccounts = [], implicitAccountId = "", on
     // Filter implicit account out of found accounts to avoid duplication
     const namedAccounts = foundAccounts.filter(a => a !== implicitAccountId);
     const hasResults = namedAccounts.length > 0;
+    // Manual entry is the main path only when there is nothing to pick;
+    // otherwise it's an advanced fallback, collapsed behind a disclosure.
+    const manualIsPrimary = !hasResults && !implicitAccountId;
+    // What was typed survives collapsing and re-opening the disclosure.
+    let manualDraft = "";
 
-    function renderUI(errorMessage = null, currentValue = "", showManualInput = !hasResults) {
+    function renderUI(errorMessage = null, currentValue = "", showManualInput = manualIsPrimary) {
         const accountButtons = namedAccounts.map((acct, i) => `
             <button class="accountBtn lc-card lc-row" data-account="${acct}">
               <div class="lc-avatar">
@@ -1805,21 +1824,44 @@ async function promptForAccountId(foundAccounts = [], implicitAccountId = "", on
               <span class="lc-row-status">${CHEVRON_SVG}</span>
             </button>` : "";
 
-        const manualInputSection = showManualInput ? `
+        const manualField = `
+              <label for="accountIdInput" class="lc-field-label">Account ID</label>
+              <input type="text" id="accountIdInput" placeholder="example.near" autocapitalize="off" autocorrect="off" spellcheck="false" value="${currentValue}"
+                class="lc-input${errorMessage ? " is-invalid" : ""}"${errorMessage ? ' aria-invalid="true"' : ""} />
+              ${errorMessage ? alertBox(errorMessage) : ""}`;
+
+        let manualInputSection;
+        if (manualIsPrimary) {
+            manualInputSection = `
             <div class="lc-stack">
-              ${errorMessage ? alertBox(errorMessage) : ""}
-              <input type="text" id="accountIdInput" placeholder="example.near" autocapitalize="off" autocorrect="off" value="${currentValue}"
-                class="lc-input${errorMessage ? " is-invalid" : ""}" aria-label="NEAR account ID"${errorMessage ? ' aria-invalid="true"' : ""} />
-              <button id="confirmBtn" class="lc-btn lc-btn-primary">Confirm</button>
-            </div>` : `
-            ${errorMessage ? alertBox(errorMessage) : ""}
-            <button id="showManualBtn" class="lc-link-btn">
-              Enter account ID manually
-            </button>`;
+              ${manualField}
+              <button id="confirmBtn" class="lc-btn lc-btn-primary">Continue</button>
+            </div>`;
+        } else {
+            manualInputSection = `
+            ${errorMessage && !showManualInput ? alertBox(errorMessage) : ""}
+            <div class="lc-advanced">
+              <button id="showManualBtn" class="lc-advanced-toggle" aria-expanded="${showManualInput}" aria-controls="manualPanel">
+                <span class="lc-grow">
+                  <span class="lc-advanced-title">Don't see your account?</span>
+                  <span class="lc-advanced-sub">Enter an account ID manually</span>
+                </span>
+                ${CHEVRON_SVG}
+              </button>
+              ${showManualInput ? `
+              <div id="manualPanel" class="lc-advanced-panel">
+                ${manualField}
+                <p class="lc-note" style="margin:0;">Any existing NEAR account this Ledger key has full access to.</p>
+                <button id="confirmBtn" class="lc-btn lc-btn-secondary">Use This Account</button>
+              </div>` : ""}
+            </div>`;
+        }
 
         const description = hasResults
             ? "Select the account you'd like to use with this Ledger device."
-            : "Ledger provides your public key. Enter the NEAR account ID that this key has access to.";
+            : manualIsPrimary
+                ? "Ledger provides your public key. Enter the NEAR account ID that this key has access to."
+                : "No named accounts were found for this Ledger key. You can use its implicit account.";
 
         root.innerHTML = `
         <div class="lc-screen">
@@ -1928,7 +1970,10 @@ async function promptForAccountId(foundAccounts = [], implicitAccountId = "", on
             const showManualBtn = document.getElementById("showManualBtn");
             if (showManualBtn) {
                 showManualBtn.addEventListener("click", () => {
-                    renderUI(null, "", true);
+                    const expanded = showManualBtn.getAttribute("aria-expanded") === "true";
+                    const input = document.getElementById("accountIdInput");
+                    if (input) manualDraft = input.value;
+                    renderUI(null, manualDraft, !expanded);
                     setupListeners();
                 });
             }
@@ -1943,6 +1988,7 @@ async function promptForAccountId(foundAccounts = [], implicitAccountId = "", on
                     if (onVerify) {
                         setButtonLoading(confirmBtn, "Verifying…");
                         input.disabled = true;
+                        if (showManualBtn) showManualBtn.disabled = true;
                         document.querySelectorAll(".accountBtn").forEach(btn => { btn.disabled = true; });
                         try {
                             await onVerify(accountId);
