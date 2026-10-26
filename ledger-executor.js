@@ -2141,6 +2141,16 @@ async function accountExists(network, accountId) {
     }
 }
 
+/**
+ * An implicit account id is the hex of its ed25519 public key, so it belongs
+ * to that key even before anything has funded it on-chain.
+ */
+function isImplicitAccountOf(accountId, publicKey) {
+    if (!/^[0-9a-f]{64}$/.test(accountId) || !publicKey.startsWith("ed25519:")) return false;
+    const bytes = base58Decode(publicKey.slice("ed25519:".length));
+    return bytes.length === 32 && Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("") === accountId;
+}
+
 function accountCreationRequired(accountId) {
     const err = new Error(`Account ${accountId} does not exist yet.`);
     err.code = "ACCOUNT_CREATION_REQUIRED";
@@ -2151,10 +2161,13 @@ function accountCreationRequired(accountId) {
  * Check that `publicKey` is a full-access key of `accountId`.
  *
  * One view_access_key call in the common case. Only when the key isn't found
- * do we ask view_account why: nodes before neard 2.14 answer "access key does
- * not exist" for an account that doesn't exist at all, and that case (e.g. a
- * not-yet-funded implicit account) gets the "create account" offer instead of
- * a dead end.
+ * do we ask view_account why: neard 2.13 (mainnet as of 2026-10) answers
+ * "access key does not exist" for a missing account too; 2.14 reports
+ * UNKNOWN_ACCOUNT directly, after which this fallback can go.
+ *
+ * A missing account is fine when it's this key's own implicit account — it
+ * comes into existence when first funded. Any other missing account gets the
+ * "create account" offer instead of a dead end.
  */
 async function verifyAccessKey(network, accountId, publicKey) {
     let accessKey;
@@ -2166,10 +2179,14 @@ async function verifyAccessKey(network, accountId, publicKey) {
             public_key: publicKey,
         });
     } catch (error) {
-        if (isUnknownAccountError(error)) throw accountCreationRequired(accountId);
-        if (!isUnknownAccessKeyError(error)) throw error;
-        if (!(await accountExists(network, accountId))) throw accountCreationRequired(accountId);
-        throw new Error(`Access key not found for account ${accountId}. Please make sure the Ledger public key is registered for this account.`);
+        if (!isUnknownAccountError(error)) {
+            if (!isUnknownAccessKeyError(error)) throw error;
+            if (await accountExists(network, accountId)) {
+                throw new Error(`Access key not found for account ${accountId}. Please make sure the Ledger public key is registered for this account.`);
+            }
+        }
+        if (isImplicitAccountOf(accountId, publicKey)) return true;
+        throw accountCreationRequired(accountId);
     }
     if (accessKey.permission !== "FullAccess") {
         throw new Error("The public key does not have FullAccess permission for this account.");
