@@ -1001,12 +1001,260 @@ function bytesToBase64(bytes) {
 // UI Helpers
 // ============================================================================
 
+// One stylesheet for every screen: hover (pointer devices only), press, focus,
+// disabled and loading states. Screens are re-rendered via root.innerHTML, so
+// it lives in <head> where re-renders can't wipe it.
+const LEDGER_STYLES = `
+:root {
+  --lc-bg:#0b0b0c; --lc-surface:#161618; --lc-surface-hover:#1e1e21; --lc-surface-press:#252529;
+  --lc-border:#2a2a2e; --lc-border-strong:#46464d; --lc-text:#fafafa; --lc-muted:#a1a1aa; --lc-subtle:#71717a;
+  --lc-focus:#60a5fa; --lc-ok:#22c55e; --lc-danger:#f87171;
+  --lc-font:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,sans-serif;
+  --lc-mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+/* Screens size to their content (top-aligned): near-connect's modal shows
+   ~615px of this 720px iframe, so actions must never be pinned to the bottom. */
+.lc-screen {
+  display:flex; flex-direction:column; width:100%; min-height:100%; box-sizing:border-box;
+  background:var(--lc-bg); text-align:left; font-family:var(--lc-font); color:var(--lc-text);
+  animation:lc-enter 200ms ease-out both;
+}
+.lc-body { flex:1; padding:28px 24px 24px; display:flex; flex-direction:column; gap:24px; overflow:auto; }
+.lc-header { display:flex; flex-direction:column; gap:8px; }
+.lc-title-row { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.lc-title { font-size:22px; font-weight:600; line-height:1.25; letter-spacing:-0.01em; color:var(--lc-text); }
+.lc-text { margin:0; font-size:15px; line-height:1.5; color:var(--lc-muted); }
+.lc-break { overflow-wrap:anywhere; word-break:break-word; }
+.lc-em { color:var(--lc-text); font-weight:600; }
+.lc-stack { display:flex; flex-direction:column; gap:12px; }
+.lc-list { display:flex; flex-direction:column; gap:8px; }
+.lc-actions { display:flex; flex-direction:column; gap:8px; padding-top:8px; }
+.lc-row { display:flex; align-items:center; gap:12px; }
+.lc-grow { flex:1; min-width:0; }
+.lc-ellipsis { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block; }
+.lc-mono { font-family:var(--lc-mono); }
+.lc-note { margin:8px 4px 0; font-size:12px; line-height:1.5; color:var(--lc-muted); }
+.lc-field-error { margin-top:8px; font-size:12px; line-height:1.5; color:var(--lc-danger); }
+
+.lc-btn {
+  width:100%; min-height:44px; padding:10px 20px; border-radius:12px;
+  display:flex; align-items:center; justify-content:center; gap:8px;
+  font-family:var(--lc-font); font-size:15px; font-weight:600; cursor:pointer;
+  transition:background-color 120ms ease, border-color 120ms ease, opacity 120ms ease, transform 80ms ease;
+  -webkit-tap-highlight-color:transparent; touch-action:manipulation;
+}
+.lc-btn-primary { border:none; background:#fafafa; color:#0b0b0c; }
+.lc-btn-secondary { border:1px solid var(--lc-border-strong); background:transparent; color:var(--lc-text); }
+.lc-card {
+  width:100%; padding:14px; border-radius:14px; border:1px solid var(--lc-border); background:var(--lc-surface);
+  cursor:pointer; text-align:left; box-sizing:border-box; font-family:var(--lc-font); color:var(--lc-text);
+  transition:background-color 120ms ease, border-color 120ms ease, opacity 120ms ease, transform 80ms ease;
+  -webkit-tap-highlight-color:transparent; touch-action:manipulation;
+}
+.lc-card.is-selected { border-color:var(--lc-text); background:var(--lc-surface-hover); }
+.lc-card.is-unavailable { cursor:not-allowed; opacity:0.4; }
+.lc-card-title { font-size:15px; font-weight:600; line-height:1.4; color:var(--lc-text); }
+.lc-card-desc { font-size:12px; line-height:1.5; color:var(--lc-muted); }
+.lc-card-icon {
+  width:40px; height:40px; flex-shrink:0; border-radius:10px; background:#232327; color:var(--lc-text);
+  display:flex; align-items:center; justify-content:center;
+}
+.lc-avatar {
+  width:32px; height:32px; flex-shrink:0; border-radius:50%; background:#26262a; color:var(--lc-muted);
+  display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:600;
+}
+.lc-badge {
+  flex-shrink:0; padding:3px 8px; border-radius:999px; background:#26262a; white-space:nowrap;
+  font-size:11px; font-weight:600; letter-spacing:0.02em; color:var(--lc-text);
+}
+.lc-chevron { flex-shrink:0; color:var(--lc-subtle); transition:transform 120ms ease, color 120ms ease; }
+.lc-row-status { display:flex; align-items:center; gap:6px; flex-shrink:0; font-size:12px; color:var(--lc-muted); }
+.lc-radio {
+  width:18px; height:18px; flex-shrink:0; box-sizing:border-box; border-radius:50%;
+  border:1.5px solid var(--lc-border-strong); transition:border-color 120ms ease, box-shadow 120ms ease;
+}
+.is-selected .lc-radio { border-color:var(--lc-text); box-shadow:inset 0 0 0 4px var(--lc-bg), inset 0 0 0 9px var(--lc-text); }
+.lc-icon-btn {
+  color:var(--lc-muted); display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px; flex-shrink:0;
+  margin:-8px -10px -8px 0; padding:0; border:none; border-radius:10px; background:transparent; cursor:pointer;
+  transition:background-color 120ms ease; -webkit-tap-highlight-color:transparent;
+}
+.lc-link-btn {
+  width:100%; min-height:44px; padding:10px; border-radius:12px; border:1px dashed var(--lc-border-strong); background:transparent;
+  font-family:var(--lc-font); font-size:14px; font-weight:500; color:var(--lc-muted); cursor:pointer;
+  transition:background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.lc-input {
+  width:100%; padding:12px 14px; border-radius:12px; border:1px solid var(--lc-border-strong); background:var(--lc-surface); color:var(--lc-text);
+  font-family:var(--lc-font); font-size:15px; box-sizing:border-box; outline:none;
+  transition:border-color 120ms ease, box-shadow 120ms ease;
+}
+.lc-input::placeholder { color:var(--lc-subtle); }
+.lc-input:focus { border-color:#d4d4d8; box-shadow:0 0 0 3px rgba(212,212,216,0.16); }
+.lc-input.is-invalid { border-color:var(--lc-danger); }
+.lc-input.is-invalid:focus { box-shadow:0 0 0 3px rgba(248,113,113,0.2); }
+.lc-input:disabled { opacity:0.6; }
+
+.lc-alert { display:flex; gap:10px; align-items:flex-start; padding:12px 14px; border-radius:12px; border:1px solid; }
+.lc-alert p { margin:0; font-size:13px; line-height:1.5; overflow-wrap:anywhere; word-break:break-word; }
+.lc-alert-icon { display:flex; padding-top:1px; flex-shrink:0; }
+.lc-alert.is-error { background:rgba(248,113,113,0.08); border-color:rgba(248,113,113,0.28); color:#fca5a5; }
+.lc-alert.is-info { background:rgba(96,165,250,0.08); border-color:rgba(96,165,250,0.28); color:#bfdbfe; }
+
+.lc-visual { display:flex; flex-direction:column; align-items:center; gap:16px; padding:12px 0; }
+.lc-progress { display:flex; flex-direction:column; gap:10px; padding:12px 0; }
+.lc-progress-track { width:100%; height:6px; background:#232327; border-radius:999px; overflow:hidden; }
+.lc-progress-bar { height:100%; background:var(--lc-text); border-radius:999px; transition:width 200ms ease-out; }
+
+/* Hover only where a real pointer can hover — no sticky hover on touch. */
+@media (hover: hover) {
+  .lc-btn-primary:not(:disabled):hover { background:#e4e4e7; }
+  .lc-btn-secondary:not(:disabled):hover { background:rgba(255,255,255,0.06); border-color:#5c5c66; }
+  .lc-card:not(:disabled):not(.is-unavailable):hover { background:var(--lc-surface-hover); border-color:var(--lc-border-strong); }
+  .lc-card.is-selected:not(:disabled):hover { border-color:var(--lc-text); }
+  .lc-card:not(:disabled):not(.is-unavailable):hover .lc-chevron { color:var(--lc-text); transform:translateX(2px); }
+  .lc-card:not(.is-selected):not(:disabled):hover .lc-radio { border-color:#71717a; }
+  .lc-icon-btn:hover { background:rgba(255,255,255,0.08); color:var(--lc-text); }
+  .lc-link-btn:not(:disabled):hover { border-color:#737373; color:#d4d4d4; background:rgba(255,255,255,0.03); }
+}
+/* Press: immediate feedback on mouse and touch alike. */
+.lc-btn:not(:disabled):active, .lc-card:not(:disabled):not(.is-unavailable):active { transform:scale(0.98); }
+.lc-btn-primary:not(:disabled):active { background:#d4d4d8; }
+.lc-btn-secondary:not(:disabled):active { background:rgba(255,255,255,0.1); }
+.lc-card:not(:disabled):not(.is-unavailable):active { background:var(--lc-surface-press); }
+.lc-icon-btn:active { background:rgba(255,255,255,0.14); }
+.lc-link-btn:not(:disabled):active { background:rgba(255,255,255,0.06); }
+/* Keyboard focus. */
+.lc-btn:focus-visible, .lc-card:focus-visible, .lc-icon-btn:focus-visible, .lc-link-btn:focus-visible {
+  outline:2px solid #60a5fa; outline-offset:2px;
+}
+/* Disabled vs. busy: a busy control stays fully visible and shows a spinner;
+   its disabled siblings fade so the user sees which one is working. */
+.lc-btn:disabled, .lc-card:disabled, .lc-link-btn:disabled { cursor:default; }
+.lc-btn:disabled:not(.is-loading), .lc-card:disabled:not(.is-loading):not(.is-unavailable), .lc-link-btn:disabled { opacity:0.45; }
+.lc-btn.is-loading, .lc-card.is-loading { cursor:progress; }
+.lc-card.is-loading { border-color:var(--lc-border-strong); background:var(--lc-surface-hover); }
+
+/* "The app is working" spinner. */
+.lc-spinner {
+  width:44px; height:44px; box-sizing:border-box; border:3px solid #26262a; border-top-color:var(--lc-text);
+  border-radius:50%; animation:lc-spin 1s linear infinite;
+}
+.lc-spinner-sm {
+  display:inline-block; width:14px; height:14px; flex-shrink:0; box-sizing:border-box;
+  border:2px solid rgba(250,250,250,0.25); border-top-color:#fafafa; border-radius:50%;
+  animation:lc-spin 0.8s linear infinite;
+}
+.lc-btn-primary .lc-spinner-sm { border-color:rgba(11,11,12,0.2); border-top-color:#0b0b0c; }
+
+/* "Your turn on the Ledger" visual — deliberately different from the spinner. */
+.lc-device { position:relative; width:88px; height:88px; display:flex; align-items:center; justify-content:center; }
+.lc-device::before {
+  content:""; position:absolute; inset:0; border-radius:50%; border:2px solid #fafafa; opacity:0;
+  animation:lc-ring 1.8s ease-out infinite;
+}
+.lc-device-icon { position:relative; width:88px; height:88px; border-radius:50%; background:var(--lc-surface); border:1px solid var(--lc-border); display:flex; align-items:center; justify-content:center; box-sizing:border-box; }
+.lc-hint {
+  display:flex; align-items:center; justify-content:center; gap:8px; margin:0;
+  font-size:13px; line-height:1.4; color:var(--lc-muted); text-align:center;
+}
+.lc-dot { width:8px; height:8px; flex-shrink:0; border-radius:50%; background:var(--lc-ok); animation:lc-blink 1.4s ease-in-out infinite; }
+
+@keyframes lc-spin { to { transform:rotate(360deg); } }
+@keyframes lc-enter { from { transform:translateY(6px); } to { transform:none; } }
+@keyframes lc-ring { 0% { transform:scale(0.9); opacity:0.45; } 100% { transform:scale(1.35); opacity:0; } }
+@keyframes lc-blink { 0%, 100% { opacity:1; } 50% { opacity:0.3; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .lc-btn, .lc-card, .lc-icon-btn, .lc-link-btn, .lc-input, .lc-chevron, .lc-radio { transition:none; }
+  .lc-screen { animation:none; }
+  .lc-card:hover .lc-chevron { transform:none; }
+  .lc-btn:not(:disabled):active, .lc-card:not(:disabled):not(.is-unavailable):active { transform:none; }
+  .lc-spinner, .lc-spinner-sm { animation-duration:2.4s; }
+  .lc-device::before, .lc-dot { animation:none; }
+  .lc-device::before { opacity:0.3; transform:scale(1.15); }
+}
+`;
+
+const CHEVRON_SVG = `<svg class="lc-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>`;
+const USB_ICON_SVG = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v4M15 2v4"/><path d="M6 6h12v5a6 6 0 0 1-12 0V6z"/><path d="M12 17v5"/></svg>`;
+const BLUETOOTH_ICON_SVG = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m7 7 10 10-5 5V2l5 5L7 17"/></svg>`;
+
+function ensureLedgerStyles() {
+    const root = document.getElementById("root");
+    // Our screens are top-aligned and paint their own background; the host's
+    // #root centers content on a gradient.
+    if (root) { root.style.alignItems = "stretch"; root.style.justifyContent = "flex-start"; root.style.background = "#0b0b0c"; }
+    if (document.getElementById("lc-styles")) return;
+    const style = document.createElement("style");
+    style.id = "lc-styles";
+    style.textContent = LEDGER_STYLES;
+    document.head.appendChild(style);
+}
+
+function spinnerHtml() {
+    return `<div class="lc-visual" role="status" aria-label="Loading"><div class="lc-spinner"></div></div>`;
+}
+
+// Waiting for the user to act on the device (approve, review, open the app).
+function deviceWaitHtml(hint = "Waiting for confirmation on your Ledger…") {
+    return `<div class="lc-visual" role="status">
+      <div class="lc-device" aria-hidden="true">
+        <div class="lc-device-icon">
+          <svg width="52" height="52" viewBox="0 0 52 52" fill="none">
+            <rect x="6" y="18" width="40" height="16" rx="5" stroke="#fafafa" stroke-width="2"/>
+            <rect x="11" y="22" width="20" height="8" rx="1.5" fill="#262626" stroke="#737373"/>
+            <circle cx="39" cy="26" r="3" stroke="#fafafa" stroke-width="2"/>
+          </svg>
+        </div>
+      </div>
+      <p class="lc-hint"><span class="lc-dot" aria-hidden="true"></span><span>${hint}</span></p>
+    </div>`;
+}
+
+// Full-screen status: `spinner` = the app is working, `device` = user's turn on the Ledger.
+async function showStatusScreen(title, message, visual = "spinner") {
+    ensureLedgerStyles();
+    await window.selector.ui.showIframe();
+    const root = document.getElementById("root");
+    root.style.display = "flex";
+    root.innerHTML = `
+    <div class="lc-screen">
+      <div class="lc-body">
+        <div class="lc-header">
+          <span class="lc-title">${title}</span>
+          <p class="lc-text">${message}</p>
+        </div>
+        ${visual === "device" ? deviceWaitHtml() : spinnerHtml()}
+      </div>
+    </div>`;
+}
+
+function closeLedgerUI() {
+    const root = document.getElementById("root");
+    if (root) {
+        root.innerHTML = "";
+        root.style.display = "none";
+    }
+    window.selector.ui.hideIframe();
+}
+
+// Busy state for the control the user just pressed: disabled, spinner, label.
+function setButtonLoading(btn, label) {
+    btn.disabled = true;
+    btn.classList.add("is-loading");
+    btn.setAttribute("aria-busy", "true");
+    btn.innerHTML = `<span class="lc-spinner-sm" aria-hidden="true"></span><span>${label}</span>`;
+}
+
 function alertBox(message) {
     const guidance = isGuidanceMessage(message);
-    const bg = guidance ? "#0a1628" : "#290606";
-    const color = guidance ? "#93c5fd" : "#ef4444";
-    return `<div style="padding:12px; border-radius:12px; background:${bg};">
-        <p style="font-family:-apple-system,sans-serif; font-size:12px; color:${color}; line-height:1.5; margin:0; overflow-wrap:anywhere; word-break:break-word;">${message}</p>
+    const icon = guidance
+        ? `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>`
+        : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4M12 17h.01"/></svg>`;
+    return `<div class="lc-alert ${guidance ? "is-info" : "is-error"}" role="${guidance ? "status" : "alert"}">
+        <span class="lc-alert-icon" aria-hidden="true">${icon}</span>
+        <p>${message}</p>
     </div>`;
 }
 
@@ -1021,21 +1269,18 @@ async function showLedgerApprovalUI(title, message, asyncOperation, hideOnSucces
     function renderLoadingUI() {
         root.style.display = "flex";
         root.innerHTML = `
-        <style>@keyframes ledger-spin { to { transform: rotate(360deg); } }</style>
-        <div style="display:flex; flex-direction:column; width:100%; height:100%; background:#000; border-radius:24px; overflow:hidden; text-align:left;">
-          <div style="flex:1; padding:24px; display:flex; flex-direction:column; gap:32px;">
-            <div style="display:flex; flex-direction:column; gap:12px; padding-top:20px;">
-              <span style="font-family:-apple-system,sans-serif; font-weight:600; font-size:24px; color:#fafafa;">${title}</span>
-              <p style="font-family:-apple-system,sans-serif; font-size:16px; color:#a3a3a3; line-height:1.5; margin:0;">${message}</p>
+        <div class="lc-screen">
+          <div class="lc-body">
+            <div class="lc-header">
+              <span class="lc-title">${title}</span>
+              <p class="lc-text">${message}</p>
             </div>
-            <div id="ledgerSpinner" style="display:flex; align-items:center; justify-content:center; padding:22.5px 0;">
-              <div style="width:44px; height:44px; border:3px solid #313131; border-top-color:#fafafa; border-radius:50%; animation:ledger-spin 1s linear infinite;"></div>
-            </div>
-            <div id="ledgerProgress" style="display:none; flex-direction:column; gap:8px; padding:14px 0;">
-              <div style="width:100%; height:8px; background:#1a1a1a; border-radius:4px; overflow:hidden;">
-                <div id="ledgerProgressBar" style="height:100%; width:0%; background:#fafafa; transition:width 200ms ease-out;"></div>
+            <div id="ledgerSpinner">${deviceWaitHtml()}</div>
+            <div id="ledgerProgress" class="lc-progress" style="display:none;">
+              <div class="lc-progress-track">
+                <div id="ledgerProgressBar" class="lc-progress-bar" style="width:0%;"></div>
               </div>
-              <p id="ledgerProgressText" style="font-family:-apple-system,sans-serif; font-size:12px; color:#a3a3a3; margin:0; text-align:center;"></p>
+              <p id="ledgerProgressText" class="lc-hint"></p>
             </div>
           </div>
         </div>`;
@@ -1053,6 +1298,16 @@ async function showLedgerApprovalUI(title, message, asyncOperation, hideOnSucces
         const progress = document.getElementById("ledgerProgress");
         if (!bar || !text || !progress) return;
         if (total < PROGRESS_BAR_MIN_CHUNKS) return;
+        // Every chunk is on the device: the wait is now the user's review, not
+        // the transfer — swap the bar back to the "your turn" device visual.
+        if (current >= total) {
+            progress.style.display = "none";
+            if (spinner) {
+                spinner.innerHTML = deviceWaitHtml("All data sent. Review and approve on your Ledger…");
+                spinner.style.display = "block";
+            }
+            return;
+        }
         if (spinner) spinner.style.display = "none";
         progress.style.display = "flex";
         const pct = total > 0 ? Math.min(100, Math.floor((current / total) * 100)) : 0;
@@ -1064,17 +1319,17 @@ async function showLedgerApprovalUI(title, message, asyncOperation, hideOnSucces
         const errorMessage = getLedgerErrorMessage(error);
         root.style.display = "flex";
         root.innerHTML = `
-        <div style="display:flex; flex-direction:column; width:100%; height:100%; background:#000; border-radius:24px; overflow:hidden; text-align:left;">
-          <div style="flex:1; padding:24px; display:flex; flex-direction:column; gap:32px; overflow:auto;">
-            <div style="display:flex; flex-direction:column; gap:12px; padding-top:20px;">
-              <span style="font-family:-apple-system,sans-serif; font-weight:600; font-size:24px; color:#fafafa;">${title}</span>
-              <p style="font-family:-apple-system,sans-serif; font-size:16px; color:#a3a3a3; line-height:1.5; margin:0;">${message}</p>
+        <div class="lc-screen">
+          <div class="lc-body">
+            <div class="lc-header">
+              <span class="lc-title">${title}</span>
+              <p class="lc-text">${message}</p>
             </div>
-            <div style="display:flex; flex-direction:column; gap:16px;">
+            <div class="lc-stack">
               ${alertBox(errorMessage)}
-              <div style="display:flex; flex-direction:column; gap:8px; padding-top:16px;">
-                <button id="approvalCancelBtn" style="width:100%; padding:9.5px 24px; border-radius:8px; border:1px solid #404040; background:rgba(255,255,255,0.05); color:#fafafa; cursor:pointer; font-family:-apple-system,sans-serif; font-size:14px; font-weight:500;">Cancel</button>
-                <button id="approvalRetryBtn" style="width:100%; padding:9.5px 24px; border-radius:8px; border:none; background:#f5f5f5; color:#0a0a0a; cursor:pointer; font-family:-apple-system,sans-serif; font-size:14px; font-weight:500;">Try Again</button>
+              <div class="lc-actions">
+                <button id="approvalRetryBtn" class="lc-btn lc-btn-primary">Try Again</button>
+                <button id="approvalCancelBtn" class="lc-btn lc-btn-secondary">Cancel</button>
               </div>
             </div>
           </div>
@@ -1092,6 +1347,7 @@ async function showLedgerApprovalUI(title, message, asyncOperation, hideOnSucces
     }
 
     while (true) {
+        ensureLedgerStyles();
         renderLoadingUI();
         try {
             const result = await asyncOperation(reportProgress);
@@ -1131,47 +1387,45 @@ async function promptForLedgerConnect() {
     const usbLastUsed = storedMode === TRANSPORT_WEB_USB || storedMode === TRANSPORT_WEB_HID;
     const bleLastUsed = storedMode === TRANSPORT_WEB_BLE || storedMode === TRANSPORT_NATIVE_BLE;
 
+    ensureLedgerStyles();
     await window.selector.ui.showIframe();
     const root = document.getElementById("root");
     root.style.display = "flex";
 
     async function directConnect(mode) {
-        function renderConnecting(statusMessage) {
+        function renderConnecting(statusMessage, visual = "spinner") {
             root.style.display = "flex";
             root.innerHTML = `
-            <style>@keyframes ledger-connect-spin { to { transform: rotate(360deg); } }</style>
-            <div style="display:flex; flex-direction:column; width:100%; height:100%; background:#000; border-radius:24px; overflow:hidden; text-align:left;">
-              <div style="flex:1; padding:24px; display:flex; flex-direction:column; gap:32px;">
-                <div style="display:flex; flex-direction:column; gap:12px; padding-top:20px;">
-                  <span style="font-family:-apple-system,sans-serif; font-weight:600; font-size:24px; color:#fafafa;">Connect Ledger</span>
-                  <p style="font-family:-apple-system,sans-serif; font-size:16px; color:#a3a3a3; line-height:1.5; margin:0;">${statusMessage}</p>
+            <div class="lc-screen">
+              <div class="lc-body">
+                <div class="lc-header">
+                  <span class="lc-title">Connect Ledger</span>
+                  <p class="lc-text">${statusMessage}</p>
                 </div>
-                <div style="display:flex; align-items:center; justify-content:center; padding:22.5px 0;">
-                  <div style="width:44px; height:44px; border:3px solid #313131; border-top-color:#fafafa; border-radius:50%; animation:ledger-connect-spin 1s linear infinite;"></div>
-                </div>
+                ${visual === "device" ? deviceWaitHtml() : spinnerHtml()}
               </div>
             </div>`;
         }
         function renderRetry(errorMessage) {
             root.style.display = "flex";
             root.innerHTML = `
-            <div style="display:flex; flex-direction:column; width:100%; height:100%; background:#000; border-radius:24px; overflow:hidden; text-align:left;">
-              <div style="flex:1; padding:24px; display:flex; flex-direction:column; gap:32px; overflow:auto;">
-                <div style="display:flex; flex-direction:column; gap:12px; padding-top:20px;">
-                  <div style="display:flex; align-items:center; justify-content:space-between;">
-                    <span style="font-family:-apple-system,sans-serif; font-weight:600; font-size:24px; color:#fafafa;">Connect Ledger</span>
-                    <button id="cancelBtn" style="background:transparent; border:none; cursor:pointer; padding:4px;">
-                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 1L13 13M13 1L1 13" stroke="#fafafa" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <div class="lc-screen">
+              <div class="lc-body">
+                <div class="lc-header">
+                  <div class="lc-title-row">
+                    <span class="lc-title">Connect Ledger</span>
+                    <button id="cancelBtn" class="lc-icon-btn" aria-label="Close">
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 1L13 13M13 1L1 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
                     </button>
                   </div>
-                  <p style="font-family:-apple-system,sans-serif; font-size:16px; color:#a3a3a3; line-height:1.5; margin:0;">
-                    Make sure your Ledger device is ${mode === TRANSPORT_NATIVE_BLE || mode === TRANSPORT_WEB_BLE ? "nearby with Bluetooth enabled" : "connected via USB"} and the <strong style="color:#fafafa;">NEAR app</strong> is installed.
+                  <p class="lc-text">
+                    Make sure your Ledger device is ${mode === TRANSPORT_NATIVE_BLE || mode === TRANSPORT_WEB_BLE ? "nearby with Bluetooth enabled" : "connected via USB"} and the <strong class="lc-em">NEAR app</strong> is installed.
                   </p>
                 </div>
-                <div style="display:flex; flex-direction:column; gap:16px;">
+                <div class="lc-stack">
                   ${alertBox(errorMessage)}
-                  <button id="retryBtn" style="width:100%; padding:9.5px 24px; border-radius:8px; border:none; background:#f5f5f5; color:#0a0a0a; cursor:pointer; font-family:-apple-system,sans-serif; font-size:14px; font-weight:500;">Retry</button>
-                  <button id="closeBtn" style="width:100%; padding:9.5px 24px; border-radius:8px; border:1px solid #404040; background:rgba(255,255,255,0.05); color:#fafafa; cursor:pointer; font-family:-apple-system,sans-serif; font-size:14px; font-weight:500;">Close</button>
+                  <button id="retryBtn" class="lc-btn lc-btn-primary">Retry</button>
+                  <button id="closeBtn" class="lc-btn lc-btn-secondary">Close</button>
                 </div>
               </div>
             </div>`;
@@ -1186,7 +1440,7 @@ async function promptForLedgerConnect() {
                         await transportConnect(mode);
                         await window.selector.storage.set(STORAGE_KEY_TRANSPORT_MODE, mode);
                     }
-                    renderConnecting("Please approve opening the NEAR app on your Ledger device.");
+                    renderConnecting("Please approve opening the NEAR app on your Ledger device.", "device");
                     await openNearApplication();
                     resolve();
                 } catch (error) {
@@ -1225,7 +1479,7 @@ async function promptForLedgerConnect() {
     const transportButtons = [
         {
             id: "usbBtn",
-            icon: "🔌",
+            icon: USB_ICON_SVG,
             label: "USB",
             description: "Wired Ledger connection",
             available: usbAvailable,
@@ -1234,7 +1488,7 @@ async function promptForLedgerConnect() {
         },
         {
             id: "bleBtn",
-            icon: "📡",
+            icon: BLUETOOTH_ICON_SVG,
             label: "Bluetooth",
             description: "Wireless Ledger connection",
             available: bleAvailable,
@@ -1246,66 +1500,53 @@ async function promptForLedgerConnect() {
     function renderUI(errorMessage = null) {
         root.style.display = "flex";
         root.innerHTML = `
-        <style>
-          .ledger-transport-btn { position: relative; }
-          .ledger-tooltip {
-            display: none; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
-            background: #1a1a1a; border: 1px solid #313131; border-radius: 8px;
-            padding: 8px 10px; font-family: -apple-system, sans-serif; font-size: 12px; color: #a3a3a3;
-            white-space: normal; width: 220px; z-index: 10; pointer-events: none; line-height: 1.5;
-          }
-          .ledger-transport-btn:hover .ledger-tooltip { display: block; }
-          @keyframes ledger-connect-spin { to { transform: rotate(360deg); } }
-        </style>
-        <div style="display:flex; flex-direction:column; width:100%; height:100%; background:#000; border-radius:24px; overflow:hidden; text-align:left;">
-          <div style="flex:1; padding:24px; display:flex; flex-direction:column; gap:32px; overflow:auto;">
-            <div style="display:flex; flex-direction:column; gap:12px; padding-top:20px;">
-              <div style="display:flex; align-items:center; justify-content:space-between;">
-                <span style="font-family:-apple-system,sans-serif; font-weight:600; font-size:24px; color:#fafafa;">Connect Ledger</span>
-                <button id="cancelBtn" style="background:transparent; border:none; cursor:pointer; padding:4px;">
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 1L13 13M13 1L1 13" stroke="#fafafa" stroke-width="1.5" stroke-linecap="round"/></svg>
+        <div class="lc-screen">
+          <div class="lc-body">
+            <div class="lc-header">
+              <div class="lc-title-row">
+                <span class="lc-title">Connect Ledger</span>
+                <button id="cancelBtn" class="lc-icon-btn" aria-label="Close">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 1L13 13M13 1L1 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
                 </button>
               </div>
-              <p style="font-family:-apple-system,sans-serif; font-size:16px; color:#a3a3a3; line-height:1.5; margin:0;">
-                Before continuing, please ensure the <strong style="color:#fafafa;">NEAR app</strong> is installed on your Ledger device. You may install it via Ledger Live.
+              <p class="lc-text">
+                Before continuing, please ensure the <strong class="lc-em">NEAR app</strong> is installed on your Ledger device. You may install it via Ledger Live.
               </p>
             </div>
-            <div style="display:flex; flex-direction:column; gap:16px;">
+            <div class="lc-stack">
               ${transportButtons.filter(t => t.available || t.unsupportedReason).map(t => `
-              <div class="ledger-transport-btn" style="position:relative;">
-                <button id="${t.id}" ${!t.available ? "disabled" : ""} style="width:100%; padding:12px; border-radius:12px; border:1px solid #313131; background:#1a1a1a; display:flex; align-items:center; gap:12px; cursor:${t.available ? "pointer" : "not-allowed"}; opacity:${t.available ? "1" : "0.4"}; text-align:left;">
-                  <div style="width:40px; height:40px; border-radius:8px; background:#2a2a2a; display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:16px;">${t.icon}</div>
-                  <div style="flex:1;">
-                    <div style="font-family:-apple-system,sans-serif; font-weight:600; font-size:16px; color:#f5f5f5; line-height:1.5;">${t.label}</div>
-                    <div style="font-family:-apple-system,sans-serif; font-size:12px; color:#a3a3a3; line-height:1.5;">${t.description}</div>
+              <div>
+                <button id="${t.id}" ${!t.available ? `disabled aria-describedby="${t.id}Reason"` : ""} class="lc-card lc-row${t.available ? "" : " is-unavailable"}">
+                  <div class="lc-card-icon" aria-hidden="true">${t.icon}</div>
+                  <div class="lc-grow">
+                    <div class="lc-card-title">${t.label}</div>
+                    <div class="lc-card-desc">${t.description}</div>
                   </div>
-                  ${t.lastUsed ? `<div style="padding:3px 8px; border-radius:8px; background:#262626; font-family:-apple-system,sans-serif; font-size:12px; font-weight:500; color:#f5f5f5; white-space:nowrap; flex-shrink:0;">Last used</div>` : ""}
+                  ${t.lastUsed ? `<div class="lc-badge">Last used</div>` : ""}
+                  ${t.available ? CHEVRON_SVG : ""}
                 </button>
-                ${!t.available && t.unsupportedReason ? `<div class="ledger-tooltip">${t.unsupportedReason}</div>` : ""}
+                ${!t.available && t.unsupportedReason ? `<p id="${t.id}Reason" class="lc-note">${t.unsupportedReason}</p>` : ""}
               </div>
               `).join("")}
               ${errorMessage ? alertBox(errorMessage) : ""}
-              <div style="padding-top:32px;">
-                <button id="closeBtn" style="width:100%; padding:9.5px 24px; border-radius:8px; border:1px solid #404040; background:rgba(255,255,255,0.05); color:#fafafa; cursor:pointer; font-family:-apple-system,sans-serif; font-size:14px; font-weight:500;">Close</button>
+              <div class="lc-actions">
+                <button id="closeBtn" class="lc-btn lc-btn-secondary">Close</button>
               </div>
             </div>
           </div>
         </div>`;
     }
 
-    function renderConnectingUI(statusMessage) {
+    function renderConnectingUI(statusMessage, visual = "spinner") {
         root.style.display = "flex";
         root.innerHTML = `
-        <style>@keyframes ledger-connect-spin { to { transform: rotate(360deg); } }</style>
-        <div style="display:flex; flex-direction:column; width:100%; height:100%; background:#000; border-radius:24px; overflow:hidden; text-align:left;">
-          <div style="flex:1; padding:24px; display:flex; flex-direction:column; gap:32px;">
-            <div style="display:flex; flex-direction:column; gap:12px; padding-top:20px;">
-              <span style="font-family:-apple-system,sans-serif; font-weight:600; font-size:24px; color:#fafafa;">Connect Ledger</span>
-              <p style="font-family:-apple-system,sans-serif; font-size:16px; color:#a3a3a3; line-height:1.5; margin:0;">${statusMessage}</p>
+        <div class="lc-screen">
+          <div class="lc-body">
+            <div class="lc-header">
+              <span class="lc-title">Connect Ledger</span>
+              <p class="lc-text">${statusMessage}</p>
             </div>
-            <div style="display:flex; align-items:center; justify-content:center; padding:22.5px 0;">
-              <div style="width:44px; height:44px; border:3px solid #313131; border-top-color:#fafafa; border-radius:50%; animation:ledger-connect-spin 1s linear infinite;"></div>
-            </div>
+            ${visual === "device" ? deviceWaitHtml() : spinnerHtml()}
           </div>
         </div>`;
     }
@@ -1322,7 +1563,7 @@ async function promptForLedgerConnect() {
                     await window.selector.storage.set(STORAGE_KEY_TRANSPORT_MODE, mode);
                 }
 
-                renderConnectingUI("Please approve opening the NEAR app on your Ledger device.");
+                renderConnectingUI("Please approve opening the NEAR app on your Ledger device.", "device");
                 await openNearApplication();
                 resolve();
             } catch (error) {
@@ -1366,6 +1607,7 @@ async function promptForLedgerConnect() {
 // ============================================================================
 
 async function promptForDerivationPath(currentPath = DEFAULT_DERIVATION_PATH) {
+    ensureLedgerStyles();
     await window.selector.ui.showIframe();
     const root = document.getElementById("root");
     root.style.display = "flex";
@@ -1394,38 +1636,43 @@ async function promptForDerivationPath(currentPath = DEFAULT_DERIVATION_PATH) {
     }
 
     function renderUI() {
-        const customBorder = isCustomSelected ? "#a6a6a6" : "#313131";
         root.innerHTML = `
-        <div style="display:flex; flex-direction:column; width:100%; height:100%; background:#000; border-radius:24px; overflow:hidden; text-align:left;">
-          <div style="flex:1; padding:24px; display:flex; flex-direction:column; justify-content:space-between; overflow:hidden;">
-            <div style="display:flex; flex-direction:column; gap:12px; padding-top:20px;">
-              <div style="display:flex; align-items:center; justify-content:space-between;">
-                <span style="font-family:-apple-system,sans-serif; font-weight:600; font-size:24px; color:#fafafa;">Select Derivation Path</span>
-                <button id="cancelBtn" style="background:transparent; border:none; cursor:pointer; padding:4px;">
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 1L13 13M13 1L1 13" stroke="#fafafa" stroke-width="1.5" stroke-linecap="round"/></svg>
+        <div class="lc-screen">
+          <div class="lc-body">
+            <div class="lc-header">
+              <div class="lc-title-row">
+                <span class="lc-title">Select Derivation Path</span>
+                <button id="cancelBtn" class="lc-icon-btn" aria-label="Close">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 1L13 13M13 1L1 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
                 </button>
               </div>
-              <p style="font-family:-apple-system,sans-serif; font-size:16px; color:#a3a3a3; line-height:1.5; margin:0;">Choose account index to use from your Ledger.</p>
+              <p class="lc-text">Choose account index to use from your Ledger.</p>
             </div>
-            <div style="display:flex; flex-direction:column; gap:12px; flex:1; padding-top:24px; overflow-y:auto;">
+            <div class="lc-list">
               ${pathOptions.map(opt => `
-                <button class="path-btn" data-path="${opt.path}" style="width:100%; padding:12px; border-radius:12px; border:1px solid ${!isCustomSelected && currentPath === opt.path ? "#a6a6a6" : "#313131"}; background:#1a1a1a; cursor:pointer; text-align:left;">
-                  <div style="font-family:-apple-system,sans-serif; font-weight:600; font-size:16px; color:#f5f5f5; line-height:1.5;">${opt.label}</div>
-                  <div style="font-family:-apple-system,sans-serif; font-size:12px; color:#a3a3a3; line-height:1.5;">${opt.path}</div>
+                <button class="path-btn lc-card lc-row${!isCustomSelected && currentPath === opt.path ? " is-selected" : ""}" data-path="${opt.path}" role="radio" aria-checked="${!isCustomSelected && currentPath === opt.path}">
+                  <div class="lc-grow">
+                    <div class="lc-card-title">${opt.label}</div>
+                    <div class="lc-card-desc lc-mono">${opt.path}</div>
+                  </div>
+                  <span class="lc-radio" aria-hidden="true"></span>
                 </button>
               `).join("")}
-              <div id="customWrap" class="custom-wrap" style="width:100%; padding:12px; border-radius:12px; border:1px solid ${customBorder}; background:#1a1a1a; cursor:pointer; text-align:left;">
-                <div style="font-family:-apple-system,sans-serif; font-weight:600; font-size:16px; color:#f5f5f5; line-height:1.5;">Custom Index</div>
-                <div style="display:flex; align-items:center; gap:6px; margin-top:6px; font-family:-apple-system,sans-serif; font-size:12px; color:#a3a3a3; line-height:1.5;">
+              <div id="customWrap" class="custom-wrap lc-card${isCustomSelected ? " is-selected" : ""}">
+                <div class="lc-row">
+                  <div class="lc-card-title lc-grow">Custom Index</div>
+                  <span class="lc-radio" aria-hidden="true"></span>
+                </div>
+                <div class="lc-card-desc lc-mono" style="display:flex; align-items:center; gap:6px; margin-top:6px;">
                   <span>${customPathPrefix}</span>
-                  <input id="customIdx" type="number" min="0" step="1" inputmode="numeric" placeholder="0" value="${customIndexValue}" style="width:80px; padding:4px 8px; border-radius:6px; border:1px solid #313131; background:#0a0a0a; color:#f5f5f5; font-family:-apple-system,sans-serif; font-size:12px;" />
+                  <input id="customIdx" type="number" min="0" step="1" inputmode="numeric" placeholder="0" value="${customIndexValue}" class="lc-input" style="width:96px; padding:6px 10px; border-radius:8px; background:#0b0b0c; font-size:13px;" aria-label="Custom account index" />
                   <span>${customPathSuffix}</span>
                 </div>
-                <div id="customError" style="display:none; margin-top:6px; font-family:-apple-system,sans-serif; font-size:12px; color:#ef4444; line-height:1.5;"></div>
+                <div id="customError" class="lc-field-error" style="display:none;"></div>
               </div>
             </div>
-            <div style="padding-top:16px;">
-              <button id="confirmBtn" style="width:100%; padding:9.5px 24px; border-radius:8px; border:none; background:#f5f5f5; color:#0a0a0a; cursor:pointer; font-family:-apple-system,sans-serif; font-size:14px; font-weight:500;">Continue</button>
+            <div class="lc-actions">
+              <button id="confirmBtn" class="lc-btn lc-btn-primary">Continue</button>
             </div>
           </div>
         </div>`;
@@ -1507,8 +1754,7 @@ async function promptForDerivationPath(currentPath = DEFAULT_DERIVATION_PATH) {
                     if (!path) return;
                     currentPath = path;
                 }
-                root.innerHTML = "";
-                root.style.display = "none";
+                setButtonLoading(confirmBtn, "Continue");
                 resolve(currentPath);
             });
 
@@ -1528,6 +1774,7 @@ async function promptForDerivationPath(currentPath = DEFAULT_DERIVATION_PATH) {
 // ============================================================================
 
 async function promptForAccountId(foundAccounts = [], implicitAccountId = "", onVerify = null, onCreateAccount = null, hideOnSuccess = true) {
+    ensureLedgerStyles();
     await window.selector.ui.showIframe();
     const root = document.getElementById("root");
     root.style.display = "flex";
@@ -1538,33 +1785,35 @@ async function promptForAccountId(foundAccounts = [], implicitAccountId = "", on
 
     function renderUI(errorMessage = null, currentValue = "", showManualInput = !hasResults) {
         const accountButtons = namedAccounts.map((acct, i) => `
-            <button class="accountBtn" data-account="${acct}" style="width:100%; padding:12px 14px; border-radius:12px; border:1px solid #313131; background:#1a1a1a; cursor:pointer; text-align:left; display:flex; align-items:center; gap:10px;">
-              <div style="width:32px; height:32px; border-radius:50%; background:#262626; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
-                <span style="font-family:-apple-system,sans-serif; font-size:13px; color:#a3a3a3;">${acct.charAt(0).toUpperCase()}</span>
+            <button class="accountBtn lc-card lc-row" data-account="${acct}">
+              <div class="lc-avatar">
+                <span>${acct.charAt(0).toUpperCase()}</span>
               </div>
-              <span style="font-family:-apple-system,sans-serif; font-size:14px; color:#f5f5f5; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${acct}</span>
+              <span class="lc-grow lc-ellipsis lc-card-title">${acct}</span>
+              <span class="lc-row-status">${CHEVRON_SVG}</span>
             </button>`).join("");
 
         const implicitButton = implicitAccountId ? `
-            <button id="useImplicitBtn" class="accountBtn" data-account="${implicitAccountId}" style="width:100%; padding:12px 14px; border-radius:12px; border:1px solid #313131; background:#1a1a1a; cursor:pointer; text-align:left; display:flex; align-items:center; gap:10px;">
-              <div style="width:32px; height:32px; border-radius:50%; background:#262626; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+            <button id="useImplicitBtn" class="accountBtn lc-card lc-row" data-account="${implicitAccountId}">
+              <div class="lc-avatar">
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M13 14s1 0 1-1-1-4-6-4-6 3-6 4 1 1 1 1h10zM8 7a3 3 0 1 0 0-6 3 3 0 0 0 0 6z" fill="#a3a3a3"/></svg>
               </div>
-              <div style="display:flex; flex-direction:column; gap:2px; overflow:hidden;">
-                <span style="font-family:-apple-system,sans-serif; font-size:12px; color:#a3a3a3;">Implicit account</span>
-                <span style="font-family:-apple-system,sans-serif; font-size:13px; color:#f5f5f5; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${implicitAccountId.slice(0, 16)}...${implicitAccountId.slice(-8)}</span>
+              <div class="lc-grow" style="display:flex; flex-direction:column; gap:2px;">
+                <span class="lc-card-desc">Implicit account</span>
+                <span class="lc-card-title lc-ellipsis lc-mono">${implicitAccountId.slice(0, 16)}…${implicitAccountId.slice(-8)}</span>
               </div>
+              <span class="lc-row-status">${CHEVRON_SVG}</span>
             </button>` : "";
 
         const manualInputSection = showManualInput ? `
-            <div style="display:flex; flex-direction:column; gap:12px;">
+            <div class="lc-stack">
               ${errorMessage ? alertBox(errorMessage) : ""}
               <input type="text" id="accountIdInput" placeholder="example.near" autocapitalize="off" autocorrect="off" value="${currentValue}"
-                style="width:100%; padding:12px; border-radius:12px; border:1px solid ${errorMessage ? "#ef4444" : "#a6a6a6"}; background:#1a1a1a; color:#fafafa; font-family:-apple-system,sans-serif; font-size:14px; box-sizing:border-box; outline:none;" />
-              <button id="confirmBtn" style="width:100%; padding:9.5px 24px; border-radius:8px; border:none; background:#f5f5f5; color:#0a0a0a; cursor:pointer; font-family:-apple-system,sans-serif; font-size:14px; font-weight:500;">Confirm</button>
+                class="lc-input${errorMessage ? " is-invalid" : ""}" aria-label="NEAR account ID"${errorMessage ? ' aria-invalid="true"' : ""} />
+              <button id="confirmBtn" class="lc-btn lc-btn-primary">Confirm</button>
             </div>` : `
             ${errorMessage ? alertBox(errorMessage) : ""}
-            <button id="showManualBtn" style="width:100%; padding:10px; border-radius:12px; border:1px dashed #525252; background:transparent; cursor:pointer; font-family:-apple-system,sans-serif; font-size:13px; color:#a3a3a3;">
+            <button id="showManualBtn" class="lc-link-btn">
               Enter account ID manually
             </button>`;
 
@@ -1573,20 +1822,20 @@ async function promptForAccountId(foundAccounts = [], implicitAccountId = "", on
             : "Ledger provides your public key. Enter the NEAR account ID that this key has access to.";
 
         root.innerHTML = `
-        <div style="display:flex; flex-direction:column; width:100%; height:100%; background:#000; border-radius:24px; overflow:hidden; text-align:left;">
-          <div style="flex:1; padding:24px; display:flex; flex-direction:column; gap:24px; overflow:auto;">
-            <div style="display:flex; flex-direction:column; gap:12px; padding-top:20px;">
-              <div style="display:flex; align-items:center; justify-content:space-between;">
-                <span style="font-family:-apple-system,sans-serif; font-weight:600; font-size:24px; color:#fafafa;">Select Account</span>
-                <button id="cancelBtn" style="background:transparent; border:none; cursor:pointer; padding:4px;">
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 1L13 13M13 1L1 13" stroke="#fafafa" stroke-width="1.5" stroke-linecap="round"/></svg>
+        <div class="lc-screen">
+          <div class="lc-body">
+            <div class="lc-header">
+              <div class="lc-title-row">
+                <span class="lc-title">Select Account</span>
+                <button id="cancelBtn" class="lc-icon-btn" aria-label="Close">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 1L13 13M13 1L1 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
                 </button>
               </div>
-              <p style="font-family:-apple-system,sans-serif; font-size:14px; color:#a3a3a3; line-height:1.5; margin:0;">
+              <p class="lc-text">
                 ${description}
               </p>
             </div>
-            <div style="display:flex; flex-direction:column; gap:10px;">
+            <div class="lc-list">
               ${accountButtons}
               ${implicitButton}
             </div>
@@ -1600,17 +1849,22 @@ async function promptForAccountId(foundAccounts = [], implicitAccountId = "", on
     return new Promise((resolve, reject) => {
         function selectAccount(accountId) {
             return async () => {
-                // Find the clicked button and show loading state
+                // Busy state on the picked row (spinner + "Checking…"); the other
+                // controls fade out as disabled so it's clear which one is working.
                 const btns = document.querySelectorAll(".accountBtn");
                 btns.forEach(btn => {
                     btn.disabled = true;
                     if (btn.dataset.account === accountId) {
-                        btn.style.borderColor = "#525252";
-                        btn.style.opacity = "0.7";
+                        btn.classList.add("is-loading");
+                        btn.setAttribute("aria-busy", "true");
+                        const status = btn.querySelector(".lc-row-status");
+                        if (status) status.innerHTML = `<span class="lc-spinner-sm" aria-hidden="true"></span>Checking…`;
                     }
                 });
                 const confirmBtn = document.getElementById("confirmBtn");
                 if (confirmBtn) confirmBtn.disabled = true;
+                const showManualBtn = document.getElementById("showManualBtn");
+                if (showManualBtn) showManualBtn.disabled = true;
 
                 if (onVerify) {
                     try {
@@ -1687,8 +1941,9 @@ async function promptForAccountId(foundAccounts = [], implicitAccountId = "", on
                     const accountId = input.value.trim();
                     if (!accountId) return;
                     if (onVerify) {
-                        confirmBtn.disabled = true;
-                        confirmBtn.textContent = "Verifying...";
+                        setButtonLoading(confirmBtn, "Verifying…");
+                        input.disabled = true;
+                        document.querySelectorAll(".accountBtn").forEach(btn => { btn.disabled = true; });
                         try {
                             await onVerify(accountId);
                             if (hideOnSuccess) {
@@ -1811,25 +2066,26 @@ async function createUserAccountViaApi(accountId, publicKey) {
 }
 
 async function promptForCreateAccount(accountId, reasonMessage, onCreateAccount) {
+    ensureLedgerStyles();
     const root = document.getElementById("root");
     root.style.display = "flex";
 
     function renderUI(errorMessage = null) {
         const alertMessage = errorMessage || reasonMessage;
         root.innerHTML = `
-        <div style="display:flex; flex-direction:column; width:100%; height:100%; background:#000; border-radius:24px; overflow:hidden; text-align:left;">
-          <div style="flex:1; padding:24px; display:flex; flex-direction:column; gap:32px; overflow:auto;">
-            <div style="display:flex; flex-direction:column; gap:12px; padding-top:20px;">
-              <span style="font-family:-apple-system,sans-serif; font-weight:600; font-size:24px; color:#fafafa;">Account Doesn't Exist</span>
-              <p style="font-family:-apple-system,sans-serif; font-size:14px; color:#a3a3a3; line-height:1.5; margin:0; overflow-wrap:anywhere; word-break:break-word;">
-                The account <strong style="color:#fafafa;">${accountId}</strong> does not exist on NEAR blockchain. Do you want to create it now?
+        <div class="lc-screen">
+          <div class="lc-body">
+            <div class="lc-header">
+              <span class="lc-title">Account Doesn't Exist</span>
+              <p class="lc-text lc-break">
+                The account <strong class="lc-em">${accountId}</strong> does not exist on NEAR blockchain. Do you want to create it now?
               </p>
             </div>
-            <div style="display:flex; flex-direction:column; gap:16px;">
+            <div class="lc-stack">
               ${alertMessage ? alertBox(alertMessage) : ""}
-              <div style="display:flex; flex-direction:column; gap:8px; padding-top:${alertMessage ? "0" : "16px"};">
-                <button id="createAccountCancelBtn" style="width:100%; padding:9.5px 24px; border-radius:8px; border:1px solid #404040; background:rgba(255,255,255,0.05); color:#fafafa; cursor:pointer; font-family:-apple-system,sans-serif; font-size:14px; font-weight:500;">Cancel</button>
-                <button id="createAccountConfirmBtn" style="width:100%; padding:9.5px 24px; border-radius:8px; border:none; background:#f5f5f5; color:#0a0a0a; cursor:pointer; font-family:-apple-system,sans-serif; font-size:14px; font-weight:500;">Create Account</button>
+              <div class="lc-actions">
+                <button id="createAccountConfirmBtn" class="lc-btn lc-btn-primary">Create Account</button>
+                <button id="createAccountCancelBtn" class="lc-btn lc-btn-secondary">Cancel</button>
               </div>
             </div>
           </div>
@@ -1846,8 +2102,8 @@ async function promptForCreateAccount(accountId, reasonMessage, onCreateAccount)
             cancelBtn.addEventListener("click", () => { resolve(false); });
 
             createBtn.addEventListener("click", async () => {
-                createBtn.disabled = true;
-                createBtn.textContent = "Creating...";
+                setButtonLoading(createBtn, "Creating account…");
+                cancelBtn.disabled = true;
                 try {
                     await onCreateAccount(accountId);
                     resolve(true);
@@ -2168,16 +2424,26 @@ class LedgerWallet {
         const storedMode = await window.selector.storage.get(STORAGE_KEY_TRANSPORT_MODE);
         if (!storedMode) throw new Error("Ledger is not connected. Please sign in with Ledger first.");
 
+        ensureLedgerStyles();
+        const openingNearApp = () => showStatusScreen(
+            "Reconnect Ledger",
+            "If asked, approve opening the NEAR app on your Ledger device.",
+            "device",
+        );
+
         // WebUSB can reconnect silently via getDevices() — no user gesture needed
         if ((storedMode === TRANSPORT_WEB_USB || storedMode === TRANSPORT_WEB_HID) && isWebUsbSupported()) {
             try {
                 const devices = await navigator.usb.getDevices();
                 const device = devices.find(d => d.vendorId === LEDGER_VENDOR_ID);
                 if (device) {
+                    await showStatusScreen("Reconnect Ledger", "Connecting to your Ledger device…");
                     await usbOpen(device);
                     _activeTransport = _usbDevice;
                     _activeTransportMode = TRANSPORT_WEB_USB;
+                    await openingNearApp();
                     await openNearApplication();
+                    await showStatusScreen("Preparing Request", "Getting your request ready for signing…");
                     return;
                 }
             } catch {
@@ -2188,8 +2454,11 @@ class LedgerWallet {
         // Native BLE can reconnect silently — the native side persists the connection across iframe lifecycles
         if (storedMode === TRANSPORT_NATIVE_BLE) {
             try {
+                await showStatusScreen("Reconnect Ledger", "Connecting to your Ledger device…");
                 await transportConnect(TRANSPORT_NATIVE_BLE);
+                await openingNearApp();
                 await openNearApplication();
+                await showStatusScreen("Preparing Request", "Getting your request ready for signing…");
                 return;
             } catch {
                 // Native BLE reconnect failed — fall through to manual reconnect
@@ -2205,47 +2474,44 @@ class LedgerWallet {
         await new Promise((resolve, reject) => {
             function renderConnectButton(errorMessage) {
                 root.innerHTML = `
-                <div style="display:flex; flex-direction:column; width:100%; height:100%; background:#000; border-radius:24px; overflow:hidden; text-align:left;">
-                  <div style="flex:1; padding:24px; display:flex; flex-direction:column; gap:32px; overflow:auto;">
-                    <div style="display:flex; flex-direction:column; gap:12px; padding-top:20px;">
-                      <div style="display:flex; align-items:center; justify-content:space-between;">
-                        <span style="font-family:-apple-system,sans-serif; font-weight:600; font-size:24px; color:#fafafa;">Reconnect Ledger</span>
-                        <button id="reconnectCancelBtn" style="background:transparent; border:none; cursor:pointer; padding:4px;">
-                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 1L13 13M13 1L1 13" stroke="#fafafa" stroke-width="1.5" stroke-linecap="round"/></svg>
+                <div class="lc-screen">
+                  <div class="lc-body">
+                    <div class="lc-header">
+                      <div class="lc-title-row">
+                        <span class="lc-title">Reconnect Ledger</span>
+                        <button id="reconnectCancelBtn" class="lc-icon-btn" aria-label="Close">
+                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 1L13 13M13 1L1 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
                         </button>
                       </div>
-                      <p style="font-family:-apple-system,sans-serif; font-size:16px; color:#a3a3a3; line-height:1.5; margin:0;">
+                      <p class="lc-text">
                         Please make sure your Ledger device is ${(storedMode === TRANSPORT_WEB_BLE || storedMode === TRANSPORT_NATIVE_BLE) ? "nearby and Bluetooth is enabled" : "connected via USB"}.
                       </p>
                     </div>
                     ${errorMessage ? alertBox(errorMessage) : ""}
-                    <div style="display:flex; flex-direction:column; gap:8px;">
-                      <button id="reconnectBtn" style="width:100%; padding:9.5px 24px; border-radius:8px; border:none; background:#f5f5f5; color:#0a0a0a; cursor:pointer; font-family:-apple-system,sans-serif; font-size:14px; font-weight:500;">Connect</button>
+                    <div class="lc-actions">
+                      <button id="reconnectBtn" class="lc-btn lc-btn-primary">Connect</button>
                     </div>
                   </div>
                 </div>`;
 
                 document.getElementById("reconnectBtn").addEventListener("click", async () => {
                     root.innerHTML = `
-                    <style>@keyframes ledger-spin { to { transform: rotate(360deg); } }</style>
-                    <div style="display:flex; flex-direction:column; width:100%; height:100%; background:#000; border-radius:24px; overflow:hidden; text-align:left;">
-                      <div style="flex:1; padding:24px; display:flex; flex-direction:column; gap:32px;">
-                        <div style="display:flex; flex-direction:column; gap:12px; padding-top:20px;">
-                          <span style="font-family:-apple-system,sans-serif; font-weight:600; font-size:24px; color:#fafafa;">Reconnect Ledger</span>
-                          <p style="font-family:-apple-system,sans-serif; font-size:16px; color:#a3a3a3; line-height:1.5; margin:0;">Connecting to your Ledger device…</p>
+                    <div class="lc-screen">
+                      <div class="lc-body">
+                        <div class="lc-header">
+                          <span class="lc-title">Reconnect Ledger</span>
+                          <p class="lc-text">Connecting to your Ledger device…</p>
                         </div>
-                        <div style="display:flex; align-items:center; justify-content:center; padding:22.5px 0;">
-                          <div style="width:44px; height:44px; border:3px solid #313131; border-top-color:#fafafa; border-radius:50%; animation:ledger-spin 1s linear infinite;"></div>
-                        </div>
+                        ${spinnerHtml()}
                       </div>
                     </div>`;
                     try {
                         if (!(await transportIsConnected())) {
                             await transportConnect(storedMode);
                         }
+                        await openingNearApp();
                         await openNearApplication();
-                        root.innerHTML = "";
-                        root.style.display = "none";
+                        await showStatusScreen("Preparing Request", "Getting your request ready for signing…");
                         resolve();
                     } catch (error) {
                         const errorMsg = getLedgerErrorMessage(error);
@@ -2303,6 +2569,7 @@ class LedgerWallet {
         const network = params?.network || "mainnet";
 
         // Look up accounts associated with this public key
+        await showStatusScreen("Finding Your Accounts", "Looking up NEAR accounts linked to this Ledger…");
         const foundAccounts = await lookupAccountsByPublicKey(network, publicKey);
 
         const verifyAccount = async (accountId) => {
@@ -2348,6 +2615,7 @@ class LedgerWallet {
             ? `up to ${formatNearAmount(allowance)} NEAR in gas fees`
             : "unlimited gas fees";
 
+        await showStatusScreen("Grant App Access", "Preparing the access key transaction…");
         const { accessKey, block } = await this._getAccessKeyAndBlock(network, accountId, signerPublicKey);
         const blockHash = base58Decode(block.header.hash);
         const nonce = BigInt(accessKey.nonce) + 1n;
@@ -2370,9 +2638,8 @@ class LedgerWallet {
 
         const signature = await showLedgerApprovalUI(
             "Grant App Access",
-            `This transaction adds an access key that allows the application to call ${methodDesc} on <strong style="color:#fafafa;">${contractId}</strong> using ${allowanceDesc} on behalf of your account. Your funds remain safe — the key can only be used for gas fees, not transfers.`,
+            `This transaction adds an access key that allows the application to call ${methodDesc} on <strong class="lc-em">${contractId}</strong> using ${allowanceDesc} on behalf of your account. Your funds remain safe — the key can only be used for gas fees, not transfers.`,
             (onProgress) => sign(txBytes, derivationPath, onProgress),
-            true,
         );
 
         // Build signed transaction and broadcast
@@ -2382,15 +2649,17 @@ class LedgerWallet {
         signedTx.set(signature.subarray(0, 64), txBytes.length + 1);
 
         const base64Tx = bytesToBase64(signedTx);
+        await showStatusScreen("Grant App Access", "Submitting the transaction to NEAR…");
         await rpcRequest(network, "broadcast_tx_commit", [base64Tx]);
     }
 
     async signIn(params) {
         try {
             const { accounts } = await this._performSignInFlow(params);
-            window.selector.ui.hideIframe();
+            closeLedgerUI();
             return accounts;
         } catch (error) {
+            closeLedgerUI();
             await transportDisconnect();
             throw error;
         }
@@ -2466,7 +2735,6 @@ class LedgerWallet {
             "Approve Transaction",
             "Please review and approve the transaction on your Ledger device.",
             (onProgress) => sign(txBytes, derivationPath, onProgress),
-            true,
         );
 
         // Build signed transaction: tx bytes + signature (enum variant 0 + 64 bytes)
@@ -2476,8 +2744,12 @@ class LedgerWallet {
         signedTx.set(signature.subarray(0, 64), txBytes.length + 1);
 
         const base64Tx = bytesToBase64(signedTx);
-        const result = await rpcRequest(network, "broadcast_tx_commit", [base64Tx]);
-        return result;
+        await showStatusScreen("Sending Transaction", "Signed. Submitting your transaction to NEAR…");
+        try {
+            return await rpcRequest(network, "broadcast_tx_commit", [base64Tx]);
+        } finally {
+            closeLedgerUI();
+        }
     }
 
     async signAndSendTransactions(params) {
