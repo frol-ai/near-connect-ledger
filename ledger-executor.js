@@ -1005,6 +1005,9 @@ function bytesToBase64(bytes) {
 // disabled and loading states. Screens are re-rendered via root.innerHTML, so
 // it lives in <head> where re-renders can't wipe it.
 const LEDGER_STYLES = `
+/* Inherit by default: the host's #root * rule would otherwise paint every
+   element (e.g. a button's label span) white in its own font. */
+.lc-screen, .lc-screen * { color:inherit; font-family:inherit; }
 :root {
   --lc-bg:#0b0b0c; --lc-surface:#161618; --lc-surface-hover:#1e1e21; --lc-surface-press:#252529;
   --lc-border:#2a2a2e; --lc-border-strong:#46464d; --lc-text:#fafafa; --lc-muted:#a1a1aa; --lc-subtle:#71717a;
@@ -1194,15 +1197,44 @@ const CHEVRON_SVG = `<svg class="lc-chevron" width="16" height="16" viewBox="0 0
 const USB_ICON_SVG = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v4M15 2v4"/><path d="M6 6h12v5a6 6 0 0 1-12 0V6z"/><path d="M12 17v5"/></svg>`;
 const BLUETOOTH_ICON_SVG = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m7 7 10 10-5 5V2l5 5L7 17"/></svg>`;
 
+// The sandbox host styles `#root * { color: #fff; font-family: … }` (specificity
+// 1,0,0), which outranks any class selector — e.g. the primary button's label
+// turned white on white. Prefix every style rule with `#root ` so ours win;
+// `:root`, @-rules and keyframe steps are left alone.
+function scopeToRoot(css) {
+    return css
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|[{}])([^{}@]+?)\{/g, (match, boundary, selectors) => {
+            const trimmed = selectors.trim();
+            if (!trimmed || trimmed.startsWith(":root") || /^(from|to|\d+%)/.test(trimmed)) return match;
+            const scoped = trimmed.split(",").map(sel => `#root ${sel.trim()}`).join(", ");
+            return `${boundary}\n${scoped} {`;
+        });
+}
+
 function ensureLedgerStyles() {
     const root = document.getElementById("root");
     // Our screens are top-aligned and paint their own background; the host's
     // #root centers content on a gradient.
-    if (root) { root.style.alignItems = "stretch"; root.style.justifyContent = "flex-start"; root.style.background = "#0b0b0c"; }
+    if (root) {
+        root.style.alignItems = "stretch";
+        root.style.justifyContent = "flex-start";
+        root.style.background = "#0b0b0c";
+        // The host sizes #root at 100vw × 100vh; 100vw includes the vertical
+        // scrollbar, so a tall screen also got a horizontal scrollbar. Follow
+        // the document width and grow with the content instead.
+        root.style.width = "100%";
+        root.style.height = "auto";
+        root.style.minHeight = "100vh";
+        document.body.style.overflowX = "hidden";
+        // The host paints html/body grey; match our background past the first screen.
+        document.documentElement.style.background = "#0b0b0c";
+        document.body.style.background = "#0b0b0c";
+    }
     if (document.getElementById("lc-styles")) return;
     const style = document.createElement("style");
     style.id = "lc-styles";
-    style.textContent = LEDGER_STYLES;
+    style.textContent = scopeToRoot(LEDGER_STYLES);
     document.head.appendChild(style);
 }
 
